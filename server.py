@@ -1,227 +1,189 @@
 import socket
 import sys
-import numpy as np 
-# Create a TCP/IP socket
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+import random
+import time
 
-my_port = int(sys.argv[1])
-server_address = ('localhost', my_port)
-print >>sys.stderr, 'starting up on %s port %s' % server_address
-sock.bind(server_address)
-replication_factor = 3
-qr= 2
-sock.listen(1)
+server_addresses = [
+    ('127.0.0.1', 1200),
+    ('127.0.0.1', 1201),
+    ('127.0.0.1', 1202),
+    ('127.0.0.1', 1203),
+    ('127.0.0.1', 1204),
+]
 
+N = 5
+R = 3
+Q_r = 2
+Q_w = 2
 
+database = {}
+database_version = {}
+locks = {}
 
+server_idx = int(sys.argv[1])
 
-network = [10001,10002,10003,10004,10005]
+# Message types - 
+#
+#   user_read = 'key|user_read'
+#   user_read_reply = 'value|user_read_reply'
+#   user_write = 'key|value|user_write'
+#   user_write_reply = 'user_write_reply'
+#   coordinator_read = 'key|coordinator_read'
+#   coordinator_read_reply = 'value|version|coordinator_read_reply'
+#   coordinator_write = 'key|value|version|coordinator_write'
+#   coordinator_write_reply = 'coordinator_write_reply'
+#   lock = 'key|lock'
+#   lock_reply = '0/1|version|lock_reply'
+#   lock_release = 'key|lock_release'
 
-n_nodes = len(network)
-Qr = n_nodes/2+1
-Qw =n_nodes/2+1
-busy = False
+def process(data, connection):
+    message_type = data.split('|')[-1]
 
-my_database = {}
+    if message_type == 'user_read':
+        key,_ = data.split('|')
 
+        highest_version = -1
+        highest_version_value = ''
 
-def read_data(key,mode = 'read'):
-    global qr,sock1,busy
-    node_number = hash(key)%5
-    nodes_to_write = [network[node_number]]
-    for i in range(replication_factor-1):
-        nodes_to_write.append(network[(node_number+1+i)%5])
-
-
-
-    nodes_to_read = nodes_to_write
-    #nodes_to_read = np.random.choice(np.asarray(nodes_to_write),qr,replace=False)
-    print("Nodes to read: {}".format(nodes_to_read))
-    replies = []
-    latest_version = -1
-    quorum_received = 0
-    servers_locked =[]
-    for node in nodes_to_read:
-
-        if(mode=='write'):
-            sock1.close()
-            sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-            if(node==my_port):
-                if busy==True:
-                    return 
-                else:
-                    quorum_received+=1
-                    replies.append(my_database.get(key))
-                    servers_locked.append(my_port)
-                    busy = True
+        nodes = random.sample([hash(key)%N+i for i in range(R)], Q_r)
+        for node in nodes:
+            if node == server_idx:
+                value, version = database[key], database_version[key]
             else:
-                server_address = ('localhost', node)
-                print >>sys.stderr, 'connecting to %s port %s' % server_address
-                
-                sock1.connect(server_address)
-                message = key+'|'+'_'+'|coordinator_read'
-                print >>sys.stderr, 'sending "%s"' % message
-                sock1.sendall(message)
+                tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                tmp_sock.connect(server_addresses[node])
+                tmp_sock.sendall(key+'|coordinator_read')
+                data = tmp_sock.recv(1000)
+                value, version, _ = data.split('|')
+                tmp_sock.close()
 
-                data = sock1.recv(1000)
-                print(data)
-                key_,value,_option = data.split('|')
-                
-                if(_option!="rejected"):
-                    quorum_received+=1
-                    replies.append(value)
-                    servers_locked.append(int(key_))
-                sock1.close()
-
-
-        else:
-
-
-            sock1.close()
-            sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-
-            if(node==my_port):
-                replies.append(my_database[key])
-            else:
-                server_address = ('localhost', node)
-                print >>sys.stderr, 'connecting to %s port %s' % server_address
-                
-                sock1.connect(server_address)
-                message = key+'|'+'_'+'|coordinator_read'
-                print >>sys.stderr, 'sending "%s"' % message
-                sock1.sendall(message)
-
-                data = sock1.recv(1000)
-                print(data)
-                
-                key_,value,_ = data.split('|')
-                replies.append(value)
-                sock1.close()
-
-
-    return replies[np.random.randint(0,len(replies))],quorum_received, servers_locked
-
-
-
-def write_data(key,value):
-    global replication_factor,sock1, busy
-
-    node_number = hash(key)%5
-    
-    nodes_to_write = [network[node_number]]
-
-    # First obtain the permission from read quorum
-    quorum_received=0
-
-    while(quorum_received<Qw):
-        replies, quorum_received,servers_locked = read_data(key,mode="write")
-
-        print("Quorun received is: {}".format(quorum_received))
-        # Release quorum if not required
-        if(quorum_received<Qw):
-            for node in servers_locked:
-                sock1.close()
-                sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-
-                if(node==my_port):
-                    busy = False
-                else:
-                    server_address = ('localhost', node)
-                    print >>sys.stderr, 'connecting to %s port %s' % server_address
-                    
-                    sock1.connect(server_address)
-                    message = key+'|'+value+'|coordinator_write_release'
-                    print >>sys.stderr, 'sending "%s"' % message
-                    sock1.sendall(message)
-                    sock1.close()
-
-
-
-
-
-    for i in range(replication_factor-1):
-        nodes_to_write.append(network[(node_number+1+i)%5])
-
-    #print("Nodes to write: {}".format(nodes_to_write))
-
-    print("Obtained Quorum for write")
-    print("Servers locked are: {}".format(servers_locked))
-
-    for node in servers_locked:
-        sock1.close()
-        sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-
-        if(node==my_port):
-            busy = False
-            my_database[key]=value
-        else:
-            server_address = ('localhost', node)
-            print >>sys.stderr, 'connecting to %s port %s' % server_address
-            
-            sock1.connect(server_address)
-            message = key+'|'+value+'|coordinator_write'
-            print >>sys.stderr, 'sending "%s"' % message
-            sock1.sendall(message)
-            sock1.close()
-
-
-
-def process_data(data,connection):
-    global sock, busy
-    print(str(data).split('|'))
-    key,value,_type= data.split('|')
-    if _type=="coordinator_write":
-        if(busy==True):
-            my_database[key]=value
-            busy = False
-        else:
-            pass
-    elif _type=="coordinator_write_release":
-        busy = False        
+            version = int(version)
+            if version > highest_version:
+                highest_version = version
+                highest_version_value = value
         
-    elif _type=="coordinator_read":
-        if(busy==False):
-            print("My database has: {}".format(my_database.get(key)))
-            print(str(my_port)+"|"+str(my_database.get(key))+"|"+"read_reply")
-            connection.sendall(str(my_port)+"|"+str(my_database.get(key))+"|"+"read_reply")
-            busy = True    
+        connection.sendall(highest_version_value+'|user_read_reply')
+    
+    elif message_type == 'coordinator_read':
+        key, _ = data.split('|')
+        connection.sendall(database[key]+'|'+database_version[key]+'|'+'coordinator_read_reply')
+    
+    elif message_type == 'user_write':
+        key, value,_ = data.split('|')
+        sleep_time = 0
+        write_successfull = False
+
+        while True:
+            time.sleep(sleep_time)
+            if sleep_time == 0:
+                sleep_time += 0.1
+            else:
+                sleep_time *= 2
+
+            locked_nodes = []
+            highest_version = -1
+            nodes = [hash(key)%N+i for i in range(R)]
+
+            print(nodes)
+
+            # try locking
+            for node in nodes:
+                if node == server_idx:
+                    if key not in locks:
+                        locks[key] = False
+                        database_version[key] = 0
+
+                    if locks[key] == False:
+                        locks[key] = True
+                        locked_nodes.append(node)
+                        highest_version = max(int(database_version[key]), highest_version)
+                else:
+                    tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    tmp_sock.connect(server_addresses[node])
+                    tmp_sock.sendall(key+'|lock')
+                    data = tmp_sock.recv(1000)
+                    print('lock reply--> '+data)
+                    success,version,_ = data.split('|')
+                    tmp_sock.close()
+
+                    if int(success):
+                        locked_nodes.append(node)
+                        highest_version = max(int(version), highest_version)
+            
+            print(locked_nodes)
+            
+            # if successfully locked write quorum, write
+            if(len(locked_nodes)>=Q_w):
+                write_successfull = True
+                for node in locked_nodes:
+                    if node == server_idx:
+                        database[key] = value
+                        database_version[key] = str(highest_version+1) 
+                    else:
+                        tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        tmp_sock.connect(server_addresses[node])
+                        tmp_sock.sendall(key+'|'+value+'|'+str(highest_version+1)+'|coordinator_write')
+                        data = tmp_sock.recv(1000)
+                        _ = data.split('|')
+                        tmp_sock.close()
+            
+            # release locks
+            for node in locked_nodes:
+                if node == server_idx:
+                    locks[key] = False
+                else:
+                    tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    tmp_sock.connect(server_addresses[node])
+                    tmp_sock.sendall(key+'|lock_release')
+                    tmp_sock.close()
+            
+            if write_successfull:
+                break
+        
+        connection.sendall('coordinator_write_reply')
+        
+    elif message_type == 'lock':
+        key,_ = data.split('|')
+        if key not in locks:
+            locks[key] = False
+            database_version[key] = str(0)
+            
+        if locks[key] == True:
+            connection.sendall('0|_|lock_reply')
         else:
-            print("I am busy, rejecting an incoming connection")
-            connection.sendall(key+"|"+my_database[key]+"|"+"rejected")
-    elif _type == "user_read":
-        reply,_,_ = read_data(key)
-        connection.sendall(reply)
-    else:  
-        print(key,value)
-        write_data(key,value)
-
+            locks[key] = True
+            if key in database_version:
+                connection.sendall('1|'+database_version[key]+'|lock_reply')
     
-    print(my_database)
-
-
-
-
-while True:
-    # Wait for a connection
-    print >>sys.stderr, 'waiting for a connection'
+    elif message_type == 'coordinator_write':
+        key,value,version,_ = data.split('|')
+        database[key] = value
+        database_version[key] = version
+        connection.sendall('coordinator_write_reply')
     
+    elif message_type == 'lock_release':
+        key,_ = data.split('|')
+        locks[key] = False
+    
+    print("database: %s\nversion:%s\nlocks:%s\n"%(database, database_version, locks))
+    
+    return
+
+
+if __name__ == "__main__":
+
+    print "Starting server at %s" % (server_addresses[server_idx],)
 
     while True:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        sock.bind(server_addresses[server_idx])
+        sock.listen(1)
+        
         connection, client_address = sock.accept()
         data = connection.recv(1000)
         if data:
-            process_data(data,connection)
-        # connection.close()
+            process(data, connection)
+        sock.close()
 
-    print >>sys.stderr, 'connection from', client_address
 
-            
-    # finally:
-    #     # Clean up the connection
-    #     connection.close()
