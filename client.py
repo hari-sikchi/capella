@@ -11,10 +11,6 @@ server_addresses = [
 
 N = 5
 
-def process(data, connection):
-    message_type = data.split('|')[-1]
-    print(message_type)
-
 
 if __name__ == "__main__":
     while True:

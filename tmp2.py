@@ -13,14 +13,6 @@ server_addresses = [
     ('127.0.0.1', 1204),
 ]
 
-server_hb_addresses = [
-    ('127.0.0.1', 1210),
-    ('127.0.0.1', 1211),
-    ('127.0.0.1', 1212),
-    ('127.0.0.1', 1213),
-    ('127.0.0.1', 1214),
-]
-
 N = 5
 R = 3
 Q_r = 2
@@ -30,11 +22,8 @@ database = {}
 database_version = {}
 locks = {}
 
-
 server_idx = int(sys.argv[1])
 
-nxt = (server_idx+1)%N
-prv = (server_idx + N-1)%N
 # Message types -
 #
 #   user_read = 'key|user_read'
@@ -48,59 +37,6 @@ prv = (server_idx + N-1)%N
 #   lock = 'key|lock'
 #   lock_reply = '0/1|version|lock_reply'
 #   lock_release = 'key|lock_release'
-
-
-def rcv_heartbeats():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(4   )
-    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    sock.bind(server_hb_addresses[server_idx])
-    sock.listen(10)
-
-    while True:
-        # sock.settimeout(1)
-        # connection, client_address = sock.accept()
-        try:
-            connection, client_address = sock.accept()
-            data = connection.recv(1000)
-            print ("Received hearbeat")
-            if data:
-                # message_type = data.split('|')[-1]
-                print ("Data", data)
-        except socket.timeout: # fail after 1 second of no activity
-            print("Didn't receive data! [Timeout]: start recovery")
-            tmp_sock.connect(server_addresses[nxt])
-            print ("hearbeat sent")
-            tmp_sock.sendall(prv+'|node_died')
-            # print ("hearbeat sent")
-            tmp_sock.close()
-
-
-def send_hb():
-    while True:
-        tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            tmp_sock.connect(server_hb_addresses[nxt])
-            print ("hearbeat sent")
-            tmp_sock.sendall(server_idx+'|heartbeat')
-            # print ("hearbeat sent")
-            tmp_sock.close()
-            time.sleep(sleep_time)
-        except:
-            continue
-#
-# def send_hb():
-#
-# 	while True:
-# 		tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-# 		try:
-# 			tmp_sock.connect(server_hb_addresses[nxt])
-#             tmp_sock.sendall(server_idx+'|heartbeat')
-#             print ("hearbeat sent")
-# 			tmp_sock.close()
-# 			time.sleep(sleep_time)
-# 		except:
-# 			continue
 
 def process(data, connection):
     message_type = data.split('|')[-1]
@@ -237,11 +173,6 @@ def process(data, connection):
 if __name__ == "__main__":
 
     print "Starting server at %s" % (server_addresses[server_idx],)
-
-    t1 = threading.Thread(target=send_hb)
-    t1.start()
-    t1 = threading.Thread(target=rcv_heartbeats)
-    t1.start()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
