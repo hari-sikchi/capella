@@ -28,6 +28,15 @@ if __name__ == "__main__":
             print(value)
             sock.close()
         
+        elif command_type == 's':
+            _, server_idx, key = command.split(' ')
+            server_idx = int(server_idx)
+            sock.connect(server_addresses[server_idx])
+            sock.sendall(key + '|start_recovery')
+            data = sock.recv(1000)
+            _ = data.split('|')
+            sock.close()
+
         else:
             _, server_idx, key, value = command.split(' ')
             server_idx = int(server_idx)

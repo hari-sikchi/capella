@@ -4,6 +4,8 @@ import random
 import time
 # from _thread import *
 import threading
+import json
+import cPickle as pickle
 
 server_addresses = [
     ('127.0.0.1', 1200),
@@ -29,12 +31,13 @@ Q_w = 2
 database = {}
 database_version = {}
 locks = {}
-
+failed_nodes = []
 
 server_idx = int(sys.argv[1])
 
 nxt = (server_idx+1)%N
 prv = (server_idx + N-1)%N
+
 # Message types -
 #
 #   user_read = 'key|user_read'
@@ -48,11 +51,13 @@ prv = (server_idx + N-1)%N
 #   lock = 'key|lock'
 #   lock_reply = '0/1|version|lock_reply'
 #   lock_release = 'key|lock_release'
+#   start_recovery = 'node|start_recovery' - node detects crash and becomes coordinator for that recovery
+#   recover_data = 'add_to|copy_key|recover_data'
 
 
 def rcv_heartbeats():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(4   )
+    sock.settimeout(4 )
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.bind(server_hb_addresses[server_idx])
     sock.listen(10)
@@ -63,16 +68,18 @@ def rcv_heartbeats():
         try:
             connection, client_address = sock.accept()
             data = connection.recv(1000)
-            print ("Received hearbeat")
-            if data:
+            # print ("Received hearbeat")
+            # if data:
                 # message_type = data.split('|')[-1]
-                print ("Data", data)
+                # print ("Data", data)
         except socket.timeout: # fail after 1 second of no activity
             print("Didn't receive data! [Timeout]: start recovery")
-            tmp_sock.connect(server_addresses[nxt])
-            print ("hearbeat sent")
-            tmp_sock.sendall(prv+'|node_died')
-            # print ("hearbeat sent")
+            tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tmp_sock.connect(server_addresses[server_idx])
+            print ("recovery messsage sent")
+            tmp_sock.sendall(str(prv)+'|start_recovery')
+            data = tmp_sock.recv(1000)
+            print("received ack")
             tmp_sock.close()
 
 
@@ -81,26 +88,111 @@ def send_hb():
         tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             tmp_sock.connect(server_hb_addresses[nxt])
-            print ("hearbeat sent")
+            # print ("hearbeat sent")
             tmp_sock.sendall(server_idx+'|heartbeat')
             # print ("hearbeat sent")
             tmp_sock.close()
             time.sleep(sleep_time)
         except:
             continue
-#
+
 # def send_hb():
 #
-# 	while True:
-# 		tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-# 		try:
-# 			tmp_sock.connect(server_hb_addresses[nxt])
+#     while True:
+#         tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#         try:
+#             tmp_sock.connect(server_hb_addresses[nxt])
 #             tmp_sock.sendall(server_idx+'|heartbeat')
 #             print ("hearbeat sent")
-# 			tmp_sock.close()
-# 			time.sleep(sleep_time)
-# 		except:
-# 			continue
+#             tmp_sock.close()
+#             time.sleep(sleep_time)
+#         except:
+#             continue
+
+def get_add_to_nodes(crash):
+
+    lst = []
+    ctr = 1
+    i = 0
+    while len(lst) != 3:
+
+        n = (crash + ctr) % N;
+
+        if n not in failed_nodes:
+            lst.append(n)
+            i = i+1
+
+        ctr = ctr + 1
+
+    return lst
+
+def get_copy_key_nodes(crash):
+
+    lst = []
+    ctr = 2
+    i = 0
+    while len(lst) != 2:
+
+        n = (crash + N - ctr) % N;
+
+        if n not in failed_nodes:
+            lst.append(n)
+
+        ctr = ctr - 1
+
+    lst.append(crash)
+    return lst
+
+def get_copy_from_list(copy_key):
+
+    lst = []
+    i = copy_key
+
+    print(failed_nodes)
+
+    while len(lst) !=2 :
+
+        if i not in failed_nodes:
+            lst.append(i)
+
+        i = (i + 1)%N
+
+    # return lst
+    return lst
+
+def recover(add_to, copy_key):
+
+    copy_from = get_copy_from_list(copy_key)
+
+    print("copy_from_list" , copy_from)
+
+    for node in copy_from:
+        tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tmp_sock.connect(server_addresses[node])
+        tmp_sock.sendall('send_database')
+        data = tmp_sock.recv(10000)
+        tmp_sock.close()
+        
+        tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tmp_sock.connect(server_addresses[node])
+        tmp_sock.sendall('send_database_version')
+        data_version = tmp_sock.recv(10000)
+        tmp_sock.close()
+
+        data = pickle.loads(data)
+        data_version = pickle.loads(data_version)
+        print("received database: %s"%(data))
+        print("received database version: %s"%(data_version))
+
+        for k in data:
+            if hash(k)%N == copy_key:
+                if k not in database:
+                    database[k] = data[k]
+                    database_version[k] = data_version[k]
+                elif database_version[k] < data_version[k]:
+                    database[k] = data[k]
+                    database_version[k] = data_version[k]
+
 
 def process(data, connection):
     message_type = data.split('|')[-1]
@@ -228,8 +320,92 @@ def process(data, connection):
         key,_ = data.split('|')
         locks[key] = False
 
-    print("database: %s\nversion:%s\nlocks:%s\n"%(database, database_version, locks))
-    print("closing this socket")
+    elif message_type == 'start_recovery':
+        crash, _ = data.split('|')
+        crash = int(crash)
+        failed_nodes.append(crash)
+
+        prv = (crash + N - 1)%N
+        tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tmp_sock.connect(server_addresses[prv])
+        tmp_sock.sendall(str(server_idx) + '|' + 'update_nxt')
+        data = tmp_sock.recv(1000)
+        print(data)
+        tmp_sock.close()
+
+        print("coord - recovery started")
+
+        for node in server_addresses:
+            if node == server_addresses[server_idx]:
+                continue
+
+            try:
+                tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                tmp_sock.connect(node)
+                tmp_sock.sendall(str(crash) + '|update_failed_nodes')
+                print("crash update sent to " + str(node))
+                data = tmp_sock.recv(1000)
+                print(data)
+                tmp_sock.close()
+
+            except:
+	        	continue
+
+
+        add_to_list = get_add_to_nodes(crash) #returns 3 nodes where data will be added
+        copy_key_list = get_copy_key_nodes(crash) #returns 3 nodes whose data will be restored
+
+        print("add_to_list" , add_to_list)
+        print("copy_key_list" , copy_key_list)
+
+        for i in range(3):
+
+            add_to = add_to_list[i]
+            copy_key = copy_key_list[i]
+            
+            if add_to == server_idx:
+                recover(add_to,copy_key)
+                print(str(add_to) +" "+ str(copy_key) + ' recovery_done')
+
+            else:
+                tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                tmp_sock.connect(server_addresses[add_to])
+                tmp_sock.sendall(str(add_to) + '|' + str(copy_key) + '|' + 'recover_data')
+                data = tmp_sock.recv(1000)
+                print(data)
+                tmp_sock.close()
+
+        print('recovery_completed')
+
+
+    elif message_type == 'recover_data':
+        add_to , copy_key , _ = data.split('|')
+        add_to = int(add_to)
+        copy_key = int(copy_key)
+        print("received recover_data " + str(add_to) +" "+ str(copy_key))
+        recover(add_to,copy_key)
+        print(str(add_to) +" "+ str(copy_key) + ' recovery_done')
+        connection.sendall(str(add_to) +" "+ str(copy_key) + ' recovery_done')
+
+
+    elif message_type == 'send_database':
+        connection.sendall(pickle.dumps(database))
+
+    elif message_type == 'send_database_version':
+        connection.sendall(pickle.dumps(database_version))
+
+    elif message_type == 'update_failed_nodes':
+        crash , _ = data.split('|')
+        failed_nodes.append(int(crash))
+        connection.sendall("Updated" + str(server_idx))
+
+    elif message_type == 'update_nxt':
+    	temp,_ = data.split('|')
+    	nxt = int(temp)
+    	connection.sendall("Updated nxt")
+
+    print("database: %s\nversion:%s\nlocks:%s\nfailed_nodes%s\n"%(database, database_version, locks, failed_nodes))
+    # print("closing this socket")
     connection.close()
     return
 
