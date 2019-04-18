@@ -28,6 +28,7 @@ R = 3
 Q_r = 2
 Q_w = 2
 
+
 database = {}
 database_version = {}
 locks = {}
@@ -35,6 +36,9 @@ failed_nodes = []
 
 server_idx = int(sys.argv[1])
 
+# Required for system recovery_done
+
+ownership = [server_idx]
 nxt = (server_idx+1)%N
 prv = (server_idx + N-1)%N
 
@@ -52,10 +56,13 @@ prv = (server_idx + N-1)%N
 #   lock_reply = '0/1|version|lock_reply'
 #   lock_release = 'key|lock_release'
 #   start_recovery = 'node|start_recovery' - node detects crash and becomes coordinator for that recovery
-#   recover_data = 'add_to|copy_key|recover_data'
-
+#   recover_data = 'add_to|recover_data'
+#   send_ownership
+#   send_database
+#   send_database_version
 
 def rcv_heartbeats():
+    time.sleep(10)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(4 )
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
@@ -78,9 +85,10 @@ def rcv_heartbeats():
             tmp_sock.connect(server_addresses[server_idx])
             print ("recovery messsage sent")
             tmp_sock.sendall(str(prv)+'|start_recovery')
-            data = tmp_sock.recv(1000)
-            print("received ack")
+            # data = tmp_sock.recv(1000)
+            # print("received ack")
             tmp_sock.close()
+            break
 
 
 def send_hb():
@@ -96,18 +104,6 @@ def send_hb():
         except:
             continue
 
-# def send_hb():
-#
-#     while True:
-#         tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#         try:
-#             tmp_sock.connect(server_hb_addresses[nxt])
-#             tmp_sock.sendall(server_idx+'|heartbeat')
-#             print ("hearbeat sent")
-#             tmp_sock.close()
-#             time.sleep(sleep_time)
-#         except:
-#             continue
 
 def get_add_to_nodes(crash):
 
@@ -117,6 +113,38 @@ def get_add_to_nodes(crash):
     while len(lst) != 3:
 
         n = (crash + ctr) % N;
+
+        if n not in failed_nodes:
+            lst.append(n)
+            i = i+1
+
+        ctr = ctr + 1
+
+    return lst
+def get_next_live_inc(node, sz):
+    lst = []
+    ctr = 0
+    i = 0
+    while len(lst) != sz:
+
+        n = (node + ctr) % N;
+
+        if n not in failed_nodes:
+            lst.append(n)
+            i = i+1
+
+        ctr = ctr + 1
+
+    return lst
+
+def get_prev(node, sz):
+
+    lst = []
+    ctr = 1
+    i = 0
+    while len(lst) != sz:
+
+        n = (node + N - ctr) % N;
 
         if n not in failed_nodes:
             lst.append(n)
@@ -160,32 +188,44 @@ def get_copy_from_list(copy_key):
     # return lst
     return lst
 
-def recover(add_to, copy_key):
+def recover(add_to, copy_from):
 
-    copy_from = get_copy_from_list(copy_key)
+    # copy_from = get_copy_from_list(copy_key)
 
     print("copy_from_list" , copy_from)
 
-    for node in copy_from:
+    for i in range(len(copy_from)):
+        node = copy_from[i]
+        if i == 0 :
+            tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tmp_sock.connect(server_addresses[node])
+            tmp_sock.sendall('send_ownership')
+            own = tmp_sock.recv(10000)
+            tmp_sock.close()
+            own = pickle.loads(own)
+            print("received ownership: %s"%(own))
+
         tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tmp_sock.connect(server_addresses[node])
         tmp_sock.sendall('send_database')
         data = tmp_sock.recv(10000)
         tmp_sock.close()
-        
+
         tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tmp_sock.connect(server_addresses[node])
         tmp_sock.sendall('send_database_version')
         data_version = tmp_sock.recv(10000)
         tmp_sock.close()
 
+
         data = pickle.loads(data)
         data_version = pickle.loads(data_version)
+
         print("received database: %s"%(data))
         print("received database version: %s"%(data_version))
 
         for k in data:
-            if hash(k)%N == copy_key:
+            if hash(k)%N in own:
                 if k not in database:
                     database[k] = data[k]
                     database_version[k] = data_version[k]
@@ -195,6 +235,9 @@ def recover(add_to, copy_key):
 
 
 def process(data, connection):
+
+    global database ,database_version, locks, failed_nodes, ownership, nxt, prv
+
     message_type = data.split('|')[-1]
 
     if message_type == 'user_read':
@@ -203,7 +246,9 @@ def process(data, connection):
         highest_version = -1
         highest_version_value = ''
 
-        nodes = random.sample([(hash(key)+i)%N for i in range(R)], Q_r)
+        # nodes = random.sample([(hash(key)+i)%N for i in range(R)], Q_r)
+        nodes = random.sample(get_next_live_inc(hash(key), R), Q_r)
+
         for node in nodes:
             if node == server_idx:
                 value, version = database[key], database_version[key]
@@ -240,7 +285,7 @@ def process(data, connection):
 
             locked_nodes = []
             highest_version = -1
-            nodes = [(hash(key)+i)%N for i in range(R)]
+            nodes = get_next_live_inc(hash(key), R)
 
             print(nodes)
 
@@ -325,7 +370,11 @@ def process(data, connection):
         crash = int(crash)
         failed_nodes.append(crash)
 
-        prv = (crash + N - 1)%N
+        ownership.append(crash)
+        print(' changing prv from ', prv, "to ")
+        prv = get_prev(server_idx, 1) [0]
+        print(prv)
+
         tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tmp_sock.connect(server_addresses[prv])
         tmp_sock.sendall(str(server_idx) + '|' + 'update_nxt')
@@ -336,6 +385,9 @@ def process(data, connection):
         print("coord - recovery started")
 
         for node in server_addresses:
+            if (node in failed_nodes):
+                continue
+
             if node == server_addresses[server_idx]:
                 continue
 
@@ -353,40 +405,41 @@ def process(data, connection):
 
 
         add_to_list = get_add_to_nodes(crash) #returns 3 nodes where data will be added
-        copy_key_list = get_copy_key_nodes(crash) #returns 3 nodes whose data will be restored
 
         print("add_to_list" , add_to_list)
-        print("copy_key_list" , copy_key_list)
 
         for i in range(3):
 
             add_to = add_to_list[i]
-            copy_key = copy_key_list[i]
-            
+
             if add_to == server_idx:
-                recover(add_to,copy_key)
-                print(str(add_to) +" "+ str(copy_key) + ' recovery_done')
+                recover(add_to,get_prev(server_idx, 2))
+                print(str(add_to) + ' recovery_done')
 
             else:
                 tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 tmp_sock.connect(server_addresses[add_to])
-                tmp_sock.sendall(str(add_to) + '|' + str(copy_key) + '|' + 'recover_data')
+                tmp_sock.sendall(str(add_to) + '|' + 'recover_data')
                 data = tmp_sock.recv(1000)
                 print(data)
                 tmp_sock.close()
 
         print('recovery_completed')
-
+        print('Listening to hearbeats now')
+        t1 = threading.Thread(target=rcv_heartbeats)
+        t1.start()
 
     elif message_type == 'recover_data':
-        add_to , copy_key , _ = data.split('|')
+        add_to , _ = data.split('|')
         add_to = int(add_to)
-        copy_key = int(copy_key)
-        print("received recover_data " + str(add_to) +" "+ str(copy_key))
-        recover(add_to,copy_key)
-        print(str(add_to) +" "+ str(copy_key) + ' recovery_done')
-        connection.sendall(str(add_to) +" "+ str(copy_key) + ' recovery_done')
+        copy_from = get_prev(server_idx, 2)
+        print("recovering data into  " + str(add_to) +" "+ str(copy_from[0]) + " and "+ str(copy_from[1]))
+        recover(add_to,copy_from)
+        print(str(add_to) +" from prev 2 live nodes" + ' recovery_done')
+        connection.sendall(str(add_to) + ' recovery_done')
 
+    elif message_type == 'send_ownership':
+        connection.sendall(pickle.dumps(ownership))
 
     elif message_type == 'send_database':
         connection.sendall(pickle.dumps(database))
