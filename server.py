@@ -68,23 +68,27 @@ def rcv_heartbeats():
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.bind(server_hb_addresses[server_idx])
     sock.listen(10)
+    own = ""
 
     while True:
         # sock.settimeout(1)
         # connection, client_address = sock.accept()
         try:
             connection, client_address = sock.accept()
+            # print(client_address)
             data = connection.recv(1000)
+            # print('data', data)
             # print ("Received hearbeat")
-            # if data:
-                # message_type = data.split('|')[-1]
+            if data:
+                # print (own)
+                own = data.split('|')[1]
                 # print ("Data", data)
         except socket.timeout: # fail after 1 second of no activity
             print("Didn't receive data! [Timeout]: start recovery")
             tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             tmp_sock.connect(server_addresses[server_idx])
-            print ("recovery messsage sent")
-            tmp_sock.sendall(str(prv)+'|start_recovery')
+            # print ("recovery messsage sent")
+            tmp_sock.sendall(str(prv)+'|'+own+'|start_recovery')
             # data = tmp_sock.recv(1000)
             # print("received ack")
             tmp_sock.close()
@@ -97,7 +101,8 @@ def send_hb():
         try:
             tmp_sock.connect(server_hb_addresses[nxt])
             # print ("hearbeat sent")
-            tmp_sock.sendall(server_idx+'|heartbeat')
+            # print("sending", pickle.loads(pickle.dumps(ownership)))
+            tmp_sock.sendall(str(server_idx)+'|'+str(pickle.dumps(ownership))+'|heartbeat')
             # print ("hearbeat sent")
             tmp_sock.close()
             time.sleep(sleep_time)
@@ -151,7 +156,7 @@ def get_prev(node, sz):
             i = i+1
 
         ctr = ctr + 1
-
+    lst.reverse()
     return lst
 
 def get_copy_key_nodes(crash):
@@ -189,7 +194,7 @@ def get_copy_from_list(copy_key):
     return lst
 
 def recover(add_to, copy_from):
-
+    global database ,database_version, locks, failed_nodes, ownership, nxt, prv
     # copy_from = get_copy_from_list(copy_key)
 
     print("copy_from_list" , copy_from)
@@ -218,14 +223,18 @@ def recover(add_to, copy_from):
         tmp_sock.close()
 
 
+
         data = pickle.loads(data)
         data_version = pickle.loads(data_version)
 
         print("received database: %s"%(data))
         print("received database version: %s"%(data_version))
+        print("received own: %s"%(own))
 
         for k in data:
+            print("dd", hash(k)%N, own)
             if hash(k)%N in own:
+                print("Adding database of ", k)
                 if k not in database:
                     database[k] = data[k]
                     database_version[k] = data_version[k]
@@ -366,11 +375,14 @@ def process(data, connection):
         locks[key] = False
 
     elif message_type == 'start_recovery':
-        crash, _ = data.split('|')
+        #             tmp_sock.sendall(str(prv)+'|'+own+'|start_recovery')
+
+        crash,own, _ = data.split('|')
+        own = pickle.loads(own)
         crash = int(crash)
         failed_nodes.append(crash)
 
-        ownership.append(crash)
+        ownership.extend(own)
         print(' changing prv from ', prv, "to ")
         prv = get_prev(server_idx, 1) [0]
         print(prv)
@@ -457,7 +469,7 @@ def process(data, connection):
     	nxt = int(temp)
     	connection.sendall("Updated nxt")
 
-    print("database: %s\nversion:%s\nlocks:%s\nfailed_nodes%s\n"%(database, database_version, locks, failed_nodes))
+    print("database: %s\nversion:%s\nlocks:%s\nfailed_nodes%s\nownership%s\n"%(database, database_version, locks, failed_nodes, ownership))
     # print("closing this socket")
     connection.close()
     return
