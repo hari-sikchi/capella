@@ -1,23 +1,22 @@
 import socket
 import sys
-
 server_addresses = [
     ('10.146.137.215', 12050),
     ('10.146.137.215', 1201),
-    ('10.145.195.203', 1202),
-    ('10.145.195.203', 1203),
+    ('10.5.16.220', 1202),
+    ('10.5.16.220', 1203),
     ('10.145.195.203', 1204),
+    ('10.145.195.203', 1205)
 ]
 
-N = 5
-
+N = 6
 
 if __name__ == "__main__":
     while True:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         command = raw_input('> ')
         command_type = command.split(' ')[0]
-        
+
         if command_type == 'read':
             _, server_idx, key = command.split(' ')
             server_idx = int(server_idx)
@@ -27,7 +26,7 @@ if __name__ == "__main__":
             value, _ = data.split('|')
             print(value)
             sock.close()
-        
+
         elif command_type == 's':
             _, server_idx, key = command.split(' ')
             server_idx = int(server_idx)
@@ -45,7 +44,3 @@ if __name__ == "__main__":
             data = sock.recv(1000)
             _ = data.split('|')
             sock.close()
-    
-
-
-

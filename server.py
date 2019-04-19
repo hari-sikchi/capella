@@ -10,20 +10,22 @@ import cPickle as pickle
 server_addresses = [
     ('10.146.137.215', 12050),
     ('10.146.137.215', 1201),
-    ('10.145.195.203', 1202),
-    ('10.145.195.203', 1203),
+    ('10.5.16.220', 1202),
+    ('10.5.16.220', 1203),
     ('10.145.195.203', 1204),
+    ('10.145.195.203', 1205)
 ]
 
 server_hb_addresses = [
     ('10.146.137.215', 12100),
     ('10.146.137.215', 1211),
-    ('10.145.195.203', 1212),
-    ('10.145.195.203', 1213),
+    ('10.5.16.220', 1212),
+    ('10.5.16.220', 1213),
     ('10.145.195.203', 1214),
-]
+    ('10.145.195.203', 1215),
 
-N = 5
+]
+N = 6
 R = 3
 Q_r = 2
 Q_w = 2
@@ -32,7 +34,13 @@ Q_w = 2
 database = {}
 database_version = {}
 locks = {}
+current_time = {}
+last_lock_state ={}
 failed_nodes = []
+key_state={} # "Locked not written LNW", "Locked and written LAW", "Not locked" NL
+rollback_database = {}
+rollback_database_version = {}
+last_state={}
 
 server_idx = int(sys.argv[1])
 
@@ -61,13 +69,49 @@ prv = (server_idx + N-1)%N
 #   send_database
 #   send_database_version
 
+def maintain_locks():
+    global rollback_database,rollback_database_version,last_state,key_state,current_time,locks
+    print("Thread started for maintaining locks related to the timer")
+    timeout = 2
+    while(1):
+        for key in locks:
+            if key in last_state:
+                if last_state[key] == False:
+                    if(locks[key]==True):
+                        last_state[key]=True
+                        current_time[key]=time.time()
+                        print("Timer started for key {}".format(key))
+                    # else:
+                    #     last_state[key]
+                else:#last_state[key]=True
+                    if(locks[key]==True):
+                        if time.time()-current_time[key]>timeout:
+                            print("Timer timed out for key {}".format(key))
+                            # timeout
+                            if key_state[key]=="LAW":
+                                #rollback
+                                if key in rollback_database:
+                                    database[key]=rollback_database[key]
+                                    database_version[key]=rollback_database_version[key]
+                                else:
+                                    del database[key]
+                                    del database_version[key]
+                                locks[key]=False
+                                last_state[key]=False
+                            elif key_state[key]=="LNW":
+                                # release lock
+                                locks[key] = False
+                                last_state[key]=False
+
+
+
+
 def rcv_heartbeats():
     time.sleep(10)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(10)
+    sock.settimeout(4 )
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.bind(server_hb_addresses[server_idx])
-    print('Listening to heartbeart at', server_hb_addresses[server_idx])
     sock.listen(10)
     own = ""
 
@@ -97,19 +141,17 @@ def rcv_heartbeats():
 
 
 def send_hb():
-    sleep_time=1
     while True:
         tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        #print("Try to connect to:",server_hb_addresses[nxt])
         try:
-            # print("try heartbeat to", server_hb_addresses[nxt])
             tmp_sock.connect(server_hb_addresses[nxt])
-            # print("Sending heartbeat to", server_hb_addresses[nxt])
             # print ("hearbeat sent")
             # print("sending", pickle.loads(pickle.dumps(ownership)))
             tmp_sock.sendall(str(server_idx)+'|'+str(pickle.dumps(ownership))+'|heartbeat')
             # print ("hearbeat sent")
             tmp_sock.close()
-            time.sleep(sleep_time)
+            time.sleep(1)
         except:
             continue
 
@@ -249,7 +291,7 @@ def recover(add_to, copy_from):
 
 def process(data, connection):
 
-    global database ,database_version, locks, failed_nodes, ownership, nxt, prv
+    global database ,database_version, locks, failed_nodes, ownership, nxt, prv, rollback_database,rollback_database_version
 
     message_type = data.split('|')[-1]
 
@@ -259,24 +301,33 @@ def process(data, connection):
         highest_version = -1
         highest_version_value = ''
 
-        # nodes = random.sample([(hash(key)+i)%N for i in range(R)], Q_r)
-        nodes = random.sample(get_next_live_inc(hash(key), R), Q_r)
+        #nodes = random.sample([(hash(key)+i)%N for i in range(R)], Q_r)
+        #nodes = random.sample(get_next_live_inc(hash(key), R), Q_r)
+
+        nodes = get_next_live_inc(hash(key), R)
+        nodes_replied = 0
 
         for node in nodes:
-            if node == server_idx:
-                value, version = database[key], database_version[key]
-            else:
-                tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                tmp_sock.connect(server_addresses[node])
-                tmp_sock.sendall(key+'|coordinator_read')
-                data = tmp_sock.recv(1000)
-                value, version, _ = data.split('|')
-                tmp_sock.close()
+            try:
+                if node == server_idx:
+                    value, version = database[key], database_version[key]
+                else:
+                    tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    tmp_sock.connect(server_addresses[node])
+                    tmp_sock.sendall(key+'|coordinator_read')
+                    data = tmp_sock.recv(1000)
+                    value, version, _ = data.split('|')
+                    tmp_sock.close()
 
-            version = int(version)
-            if version > highest_version:
-                highest_version = version
-                highest_version_value = value
+                nodes_replied += 1
+                version = int(version)
+                if version > highest_version:
+                    highest_version = version
+                    highest_version_value = value
+            except socket.error:
+                continue
+
+        assert nodes_replied >= Q_r, "Didn't get reply from read quorum, most likely due to multiple failures"
 
         connection.sendall(highest_version_value+'|user_read_reply')
 
@@ -307,7 +358,8 @@ def process(data, connection):
                 if node == server_idx:
                     if key not in locks:
                         locks[key] = False
-                        database_version[key] = str(0)
+                        last_state[key] = False
+                        database_version[key] = str("0")
 
                     if locks[key] == False:
                         locks[key] = True
@@ -330,6 +382,12 @@ def process(data, connection):
                 write_successfull = True
                 for node in locked_nodes:
                     if node == server_idx:
+                        if key not in database:
+                            rollback_database[key]="garbage"
+                            rollback_database_version[key]=str("0")
+                        else:
+                            rollback_database[key]=database[key]
+                            rollback_database_version=database_version[key]
                         database[key] = value
                         database_version[key] = str(highest_version+1)
                     else:
@@ -344,6 +402,7 @@ def process(data, connection):
             for node in locked_nodes:
                 if node == server_idx:
                     locks[key] = False
+                    last_state[key] = False
                 else:
                     tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     tmp_sock.connect(server_addresses[node])
@@ -359,7 +418,8 @@ def process(data, connection):
         key,_ = data.split('|')
         if key not in locks:
             locks[key] = False
-            database_version[key] = str(0)
+            last_state[key]= False
+            database_version[key] = str("0")
 
         if locks[key] == True:
             connection.sendall('0|_|lock_reply')
@@ -368,19 +428,38 @@ def process(data, connection):
             if key in database_version:
                 connection.sendall('1|'+database_version[key]+'|lock_reply')
 
+        key_state[key] = "LNW"
+
     elif message_type == 'coordinator_write':
         key,value,version,_ = data.split('|')
+
+        # add if not added before
+        if key not in database:
+            rollback_database[key]="garbage"
+            rollback_database_version[key]=str("0")
+        else:
+            rollback_database[key]=database[key]
+            rollback_database_version=database_version[key]
+
+        # rollback_database[key] = database[key]
+        # rollback_database_version[key] = database_version[key]
+        key_state[key] = "LAW"
+
         database[key] = value
         database_version[key] = version
+
         connection.sendall('coordinator_write_reply')
 
     elif message_type == 'lock_release':
         key,_ = data.split('|')
         locks[key] = False
+        last_state[key] = False
+        last_lock_state[key] = False
+        key_state[key] = "NL"
 
     elif message_type == 'start_recovery':
         #             tmp_sock.sendall(str(prv)+'|'+own+'|start_recovery')
-        print(data)
+
         crash,own, _ = data.split('|')
         own = pickle.loads(own)
         crash = int(crash)
@@ -474,6 +553,8 @@ def process(data, connection):
     	connection.sendall("Updated nxt")
 
     print("database: %s\nversion:%s\nlocks:%s\nfailed_nodes%s\nownership%s\n"%(database, database_version, locks, failed_nodes, ownership))
+    print("rollback database: %s\nrollback version:%s\nlocks:%s\nfailed_nodes%s\nownership%s\n"%(rollback_database, rollback_database_version, locks, failed_nodes, ownership))
+
     # print("closing this socket")
     connection.close()
     return
@@ -487,6 +568,9 @@ if __name__ == "__main__":
     t1.start()
     t1 = threading.Thread(target=rcv_heartbeats)
     t1.start()
+
+    t2 = threading.Thread(target=maintain_locks)
+    t2.start()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
