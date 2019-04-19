@@ -8,19 +8,19 @@ import json
 import cPickle as pickle
 
 server_addresses = [
-    ('127.0.0.1', 1200),
-    ('127.0.0.1', 1201),
-    ('127.0.0.1', 1202),
-    ('127.0.0.1', 1203),
-    ('127.0.0.1', 1204),
+    ('10.146.137.215', 12050),
+    ('10.146.137.215', 1201),
+    ('10.145.195.203', 1202),
+    ('10.145.195.203', 1203),
+    ('10.145.195.203', 1204),
 ]
 
 server_hb_addresses = [
-    ('127.0.0.1', 1210),
-    ('127.0.0.1', 1211),
-    ('127.0.0.1', 1212),
-    ('127.0.0.1', 1213),
-    ('127.0.0.1', 1214),
+    ('10.146.137.215', 12100),
+    ('10.146.137.215', 1211),
+    ('10.145.195.203', 1212),
+    ('10.145.195.203', 1213),
+    ('10.145.195.203', 1214),
 ]
 
 N = 5
@@ -64,9 +64,10 @@ prv = (server_idx + N-1)%N
 def rcv_heartbeats():
     time.sleep(10)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(4 )
+    sock.settimeout(10)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.bind(server_hb_addresses[server_idx])
+    print('Listening to heartbeart at', server_hb_addresses[server_idx])
     sock.listen(10)
     own = ""
 
@@ -96,10 +97,13 @@ def rcv_heartbeats():
 
 
 def send_hb():
+    sleep_time=1
     while True:
         tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            # print("try heartbeat to", server_hb_addresses[nxt])
             tmp_sock.connect(server_hb_addresses[nxt])
+            # print("Sending heartbeat to", server_hb_addresses[nxt])
             # print ("hearbeat sent")
             # print("sending", pickle.loads(pickle.dumps(ownership)))
             tmp_sock.sendall(str(server_idx)+'|'+str(pickle.dumps(ownership))+'|heartbeat')
@@ -376,7 +380,7 @@ def process(data, connection):
 
     elif message_type == 'start_recovery':
         #             tmp_sock.sendall(str(prv)+'|'+own+'|start_recovery')
-
+        print(data)
         crash,own, _ = data.split('|')
         own = pickle.loads(own)
         crash = int(crash)
